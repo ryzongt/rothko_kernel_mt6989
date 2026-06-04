@@ -1,0 +1,235 @@
+name: Build Rothko Kernel (MT6989 GKI 6.1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. v1.0). Leave empty to auto-generate."
+        required: false
+        default: ""
+      anykernel_branch:
+        description: "AnyKernel3 branch to use"
+        required: false
+        default: "main"
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+    env:
+      # ── Kernel source ──────────────────────────────────────────────
+      KERNEL_DEFCONFIG: gki_defconfig
+      ARCH: arm64
+      SUBARCH: arm64
+
+      # ── Clang toolchain (AOSP prebuilt, works with MTK GKI 6.1) ───
+      CLANG_VERSION: "clang-r510928"
+      CLANG_URL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+
+      # ── Output names ───────────────────────────────────────────────
+      KERNEL_IMAGE: Image
+      ZIP_PREFIX: "Rothko-MT6989-GKI"
+
+    steps:
+      # ── 1. Checkout kernel source ──────────────────────────────────
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: Android-U
+
+      # ── 2. Install build dependencies ─────────────────────────────
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl \
+            flex git kmod libelf-dev libssl-dev libncurses-dev \
+            lz4 python3 python3-pip rsync unzip wget zip zstd \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      # ── 3. Cache Clang toolchain ───────────────────────────────────
+      - name: Cache Clang toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/clang
+          key: clang-${{ env.CLANG_VERSION }}
+
+      - name: Download Clang toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p clang
+          cd clang
+          # Download AOSP Clang via git (shallow clone of just the needed subdir)
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            clang-aosp
+          cd clang-aosp
+          git sparse-checkout set ${{ env.CLANG_VERSION }}
+          mv ${{ env.CLANG_VERSION }}/* ..
+          cd ..
+          rm -rf clang-aosp
+
+      # ── 4. Set up build environment variables ─────────────────────
+      - name: Set up PATH and build vars
+        run: |
+          CLANG_DIR="${{ github.workspace }}/clang/bin"
+          echo "CLANG_DIR=${CLANG_DIR}" >> $GITHUB_ENV
+          echo "${CLANG_DIR}" >> $GITHUB_PATH
+
+          # Cross-compile vars
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "AR=llvm-ar" >> $GITHUB_ENV
+          echo "NM=llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=llvm-strip" >> $GITHUB_ENV
+
+          # Print versions for debugging
+          ${CLANG_DIR}/clang --version || true
+          aarch64-linux-gnu-gcc --version || true
+
+      # ── 5. Make defconfig ──────────────────────────────────────────
+      - name: Generate .config from defconfig
+        run: |
+          make O=out \
+            ARCH=${{ env.ARCH }} \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            ${{ env.KERNEL_DEFCONFIG }}
+
+      # ── 6. Build kernel ────────────────────────────────────────────
+      - name: Build kernel
+        run: |
+          make O=out \
+            ARCH=${{ env.ARCH }} \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            -j$(nproc --all) \
+            Image 2>&1 | tee build.log
+
+      # ── 7. Check build result ──────────────────────────────────────
+      - name: Verify Image exists
+        run: |
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "❌ Build failed — Image not found!"
+            echo "=== Last 80 lines of build log ==="
+            tail -80 build.log
+            exit 1
+          fi
+          echo "✅ Image built successfully"
+          ls -lh out/arch/arm64/boot/Image
+
+      # ── 8. Clone AnyKernel3 ────────────────────────────────────────
+      - name: Clone AnyKernel3
+        run: |
+          git clone --depth=1 \
+            --branch ${{ github.event.inputs.anykernel_branch }} \
+            https://github.com/osm0sis/AnyKernel3.git \
+            AnyKernel3
+
+          # Copy Image into AnyKernel3
+          cp out/arch/arm64/boot/Image AnyKernel3/Image
+
+      # ── 9. Customize AnyKernel3 anykernel.sh ──────────────────────
+      - name: Patch anykernel.sh for Rothko
+        run: |
+          cd AnyKernel3
+          # Update device/kernel metadata in anykernel.sh
+          sed -i 's/^kernel\.string=.*/kernel.string=Rothko MT6989 GKI 6.1 by ${{ github.actor }}/' anykernel.sh
+          sed -i 's/^device\.name1=.*/device.name1=rothko/' anykernel.sh
+          sed -i 's/^supported\.versions=.*/supported.versions=/' anykernel.sh
+
+      # ── 10. Package AnyKernel3 zip ─────────────────────────────────
+      - name: Create AnyKernel3 zip
+        id: package
+        run: |
+          BUILD_DATE=$(date +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          ZIP_NAME="${{ env.ZIP_PREFIX }}-${BUILD_DATE}-${SHORT_SHA}.zip"
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
+
+          cd AnyKernel3
+          zip -r9 "../${ZIP_NAME}" . \
+            --exclude="*.git*" \
+            --exclude="*README*" \
+            --exclude="*placeholder*"
+
+          echo "✅ Package created: ${ZIP_NAME}"
+          ls -lh "../${ZIP_NAME}"
+
+      # ── 11. Upload build artifacts (always available in Actions) ───
+      - name: Upload Image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rothko-Image-${{ env.BUILD_DATE }}-${{ env.SHORT_SHA }}
+          path: out/arch/arm64/boot/Image
+          retention-days: 7
+
+      - name: Upload AnyKernel3 zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rothko-AnyKernel3-${{ env.BUILD_DATE }}-${{ env.SHORT_SHA }}
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 7
+
+      # ── 12. Create GitHub Release ──────────────────────────────────
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=kernel-${{ env.BUILD_DATE }}-${{ env.SHORT_SHA }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Rothko MT6989 GKI 6.1 — ${{ env.BUILD_DATE }}"
+          body: |
+            ## Rothko Kernel (MT6989 / Dimensity 9300)
+
+            **Build date:** ${{ env.BUILD_DATE }}
+            **Commit:** [`${{ env.SHORT_SHA }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **Defconfig:** `${{ env.KERNEL_DEFCONFIG }}`
+            **Triggered by:** @${{ github.actor }}
+
+            ### Files
+            | File | Description |
+            |------|-------------|
+            | `Image` | Raw kernel image (for custom boot.img packing) |
+            | `${{ env.ZIP_NAME }}` | AnyKernel3 flashable zip (via TWRP / KernelFlasher) |
+
+            ### How to flash
+            - **AnyKernel3 zip** → flash via TWRP or [KernelFlasher](https://github.com/capntrips/KernelFlasher)
+            - **Image** → pack manually with `mkbootimg` against your stock boot.img
+
+            > ⚠️ Clean flash recommended. Wipe dalvik/cache after flashing.
+          files: |
+            out/arch/arm64/boot/Image
+            ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 13. Upload build log on failure ───────────────────────────
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-failed
+          path: build.log
+          retention-days: 3
+          
