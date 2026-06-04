@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 1
           ref: Android-U
 
-      # ── 2. Install build dependencies ─────────────────────────────
+      # ── 2. Install build dependencies + Clang via apt ─────────────
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -38,52 +38,15 @@ jobs:
             bc bison build-essential ca-certificates cpio curl \
             flex git kmod libelf-dev libssl-dev libncurses-dev \
             lz4 python3 python3-pip rsync unzip wget zip zstd \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
-
-      # ── 3. Cache Clang toolchain ───────────────────────────────────
-      - name: Cache Clang toolchain
-        id: cache-clang
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/clang
-          key: clang-neutron-09012025
-
-      # ── 4. Download Clang toolchain ────────────────────────────────
-      - name: Download Clang toolchain
-        if: steps.cache-clang.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p clang
-
-          echo "Downloading Neutron Clang..."
-          curl -L --retry 5 --retry-delay 5 \
-            "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/09012025/neutron-clang-09012025.tar.zst" \
-            -o clang.tar.zst
-
-          echo "Download complete, size: $(du -sh clang.tar.zst)"
-          tar -I zstd -xf clang.tar.zst -C clang
-          rm clang.tar.zst
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            clang lld llvm
 
           echo "Clang version:"
-          clang/bin/clang --version
+          clang --version
+          echo "LLD version:"
+          ld.lld --version
 
-      # ── 5. Set up PATH and build vars ─────────────────────────────
-      - name: Set up PATH and build vars
-        run: |
-          CLANG_DIR="${{ github.workspace }}/clang/bin"
-          echo "${CLANG_DIR}" >> $GITHUB_PATH
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "AR=llvm-ar" >> $GITHUB_ENV
-          echo "NM=llvm-nm" >> $GITHUB_ENV
-          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
-          echo "STRIP=llvm-strip" >> $GITHUB_ENV
-
-          ${CLANG_DIR}/clang --version || true
-          aarch64-linux-gnu-gcc --version || true
-
-      # ── 6. Make defconfig ──────────────────────────────────────────
+      # ── 3. Make defconfig ──────────────────────────────────────────
       - name: Generate .config from defconfig
         run: |
           make O=out \
@@ -94,7 +57,7 @@ jobs:
             LLVM=1 LLVM_IAS=1 \
             ${{ env.KERNEL_DEFCONFIG }}
 
-      # ── 7. Build kernel ────────────────────────────────────────────
+      # ── 4. Build kernel ────────────────────────────────────────────
       - name: Build kernel
         run: |
           make O=out \
@@ -106,7 +69,7 @@ jobs:
             -j$(nproc --all) \
             Image 2>&1 | tee build.log
 
-      # ── 8. Check build result ──────────────────────────────────────
+      # ── 5. Check build result ──────────────────────────────────────
       - name: Verify Image exists
         run: |
           if [ ! -f out/arch/arm64/boot/Image ]; then
@@ -117,7 +80,7 @@ jobs:
           echo "✅ Image built successfully"
           ls -lh out/arch/arm64/boot/Image
 
-      # ── 9. Clone AnyKernel3 ────────────────────────────────────────
+      # ── 6. Clone AnyKernel3 ────────────────────────────────────────
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 \
@@ -126,7 +89,7 @@ jobs:
             AnyKernel3
           cp out/arch/arm64/boot/Image AnyKernel3/Image
 
-      # ── 10. Customize anykernel.sh for Rothko ─────────────────────
+      # ── 7. Customize anykernel.sh for Rothko ──────────────────────
       - name: Patch anykernel.sh for Rothko
         run: |
           cd AnyKernel3
@@ -134,7 +97,7 @@ jobs:
           sed -i 's/^device\.name1=.*/device.name1=rothko/' anykernel.sh
           sed -i 's/^supported\.versions=.*/supported.versions=/' anykernel.sh
 
-      # ── 11. Package AnyKernel3 zip ─────────────────────────────────
+      # ── 8. Package AnyKernel3 zip ──────────────────────────────────
       - name: Create AnyKernel3 zip
         run: |
           BUILD_DATE=$(date +%Y%m%d)
@@ -152,7 +115,7 @@ jobs:
 
           ls -lh "../${ZIP_NAME}"
 
-      # ── 12. Upload artifacts ───────────────────────────────────────
+      # ── 9. Upload artifacts ────────────────────────────────────────
       - name: Upload Image artifact
         uses: actions/upload-artifact@v4
         with:
@@ -167,7 +130,7 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 7
 
-      # ── 13. Determine release tag ──────────────────────────────────
+      # ── 10. Determine release tag ──────────────────────────────────
       - name: Determine release tag
         id: tag
         run: |
@@ -177,7 +140,7 @@ jobs:
             echo "tag=kernel-${{ env.BUILD_DATE }}-${{ env.SHORT_SHA }}" >> $GITHUB_OUTPUT
           fi
 
-      # ── 14. Create GitHub Release ──────────────────────────────────
+      # ── 11. Create GitHub Release ──────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -210,7 +173,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 15. Upload build log on failure ───────────────────────────
+      # ── 12. Upload build log on failure ───────────────────────────
       - name: Upload build log (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
