@@ -48,24 +48,29 @@ jobs:
           path: ${{ github.workspace }}/clang
           key: clang-neutron-09012025
 
-      # ── 4. Download Clang toolchain (Neutron Clang LLVM 20) ────────
+      # ── 4. Download Clang toolchain ────────────────────────────────
       - name: Download Clang toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p clang
-          wget -q --show-progress \
+
+          echo "Downloading Neutron Clang..."
+          curl -L --retry 5 --retry-delay 5 \
             "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/09012025/neutron-clang-09012025.tar.zst" \
-            -O clang.tar.zst
+            -o clang.tar.zst
+
+          echo "Download complete, size: $(du -sh clang.tar.zst)"
           tar -I zstd -xf clang.tar.zst -C clang
           rm clang.tar.zst
+
+          echo "Clang version:"
+          clang/bin/clang --version
 
       # ── 5. Set up PATH and build vars ─────────────────────────────
       - name: Set up PATH and build vars
         run: |
           CLANG_DIR="${{ github.workspace }}/clang/bin"
-          echo "CLANG_DIR=${CLANG_DIR}" >> $GITHUB_ENV
           echo "${CLANG_DIR}" >> $GITHUB_PATH
-
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
@@ -75,7 +80,6 @@ jobs:
           echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
           echo "STRIP=llvm-strip" >> $GITHUB_ENV
 
-          # Print versions for debugging
           ${CLANG_DIR}/clang --version || true
           aarch64-linux-gnu-gcc --version || true
 
@@ -107,7 +111,6 @@ jobs:
         run: |
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "❌ Build failed — Image not found!"
-            echo "=== Last 80 lines of build log ==="
             tail -80 build.log
             exit 1
           fi
@@ -121,7 +124,6 @@ jobs:
             --branch ${{ github.event.inputs.anykernel_branch }} \
             https://github.com/osm0sis/AnyKernel3.git \
             AnyKernel3
-
           cp out/arch/arm64/boot/Image AnyKernel3/Image
 
       # ── 10. Customize anykernel.sh for Rothko ─────────────────────
@@ -148,7 +150,6 @@ jobs:
             --exclude="*README*" \
             --exclude="*placeholder*"
 
-          echo "✅ Package created: ${ZIP_NAME}"
           ls -lh "../${ZIP_NAME}"
 
       # ── 12. Upload artifacts ───────────────────────────────────────
@@ -197,7 +198,7 @@ jobs:
             | `${{ env.ZIP_NAME }}` | AnyKernel3 flashable zip (via TWRP / KernelFlasher) |
 
             ### How to flash
-            - **AnyKernel3 zip** → flash via TWRP or [KernelFlasher](https://github.com/capntrips/KernelFlasher)
+            - **AnyKernel3 zip** → flash via TWRP или [KernelFlasher](https://github.com/capntrips/KernelFlasher)
             - **Image** → pack manually with `mkbootimg` against your stock boot.img
 
             > ⚠️ Clean flash recommended. Wipe dalvik/cache after flashing.
