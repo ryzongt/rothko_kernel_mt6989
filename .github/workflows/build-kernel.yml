@@ -17,13 +17,9 @@ jobs:
     name: Build Kernel
     runs-on: ubuntu-22.04
     env:
-      # ── Kernel source ──────────────────────────────────────────────
       KERNEL_DEFCONFIG: gki_defconfig
       ARCH: arm64
       SUBARCH: arm64
-
-      # ── Output names ───────────────────────────────────────────────
-      KERNEL_IMAGE: Image
       ZIP_PREFIX: "Rothko-MT6989-GKI"
 
     steps:
@@ -50,18 +46,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/clang
-          key: clang-zycromerz-19
+          key: clang-neutron-09012025
 
-      # ── 4. Download Clang toolchain ────────────────────────────────
+      # ── 4. Download Clang toolchain (Neutron Clang LLVM 20) ────────
       - name: Download Clang toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p clang
-          wget -q \
-            "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240903-release/Clang-19.0.0git-20240903.tar.gz" \
-            -O clang.tar.gz
-          tar -xzf clang.tar.gz -C clang
-          rm clang.tar.gz
+          wget -q --show-progress \
+            "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/09012025/neutron-clang-09012025.tar.zst" \
+            -O clang.tar.zst
+          tar -I zstd -xf clang.tar.zst -C clang
+          rm clang.tar.zst
 
       # ── 5. Set up PATH and build vars ─────────────────────────────
       - name: Set up PATH and build vars
@@ -128,7 +124,7 @@ jobs:
 
           cp out/arch/arm64/boot/Image AnyKernel3/Image
 
-      # ── 10. Customize AnyKernel3 anykernel.sh ─────────────────────
+      # ── 10. Customize anykernel.sh for Rothko ─────────────────────
       - name: Patch anykernel.sh for Rothko
         run: |
           cd AnyKernel3
@@ -138,7 +134,6 @@ jobs:
 
       # ── 11. Package AnyKernel3 zip ─────────────────────────────────
       - name: Create AnyKernel3 zip
-        id: package
         run: |
           BUILD_DATE=$(date +%Y%m%d)
           SHORT_SHA=$(git rev-parse --short HEAD)
@@ -171,7 +166,7 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 7
 
-      # ── 13. Create GitHub Release ──────────────────────────────────
+      # ── 13. Determine release tag ──────────────────────────────────
       - name: Determine release tag
         id: tag
         run: |
@@ -181,6 +176,7 @@ jobs:
             echo "tag=kernel-${{ env.BUILD_DATE }}-${{ env.SHORT_SHA }}" >> $GITHUB_OUTPUT
           fi
 
+      # ── 14. Create GitHub Release ──────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -213,7 +209,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 14. Upload build log on failure ───────────────────────────
+      # ── 15. Upload build log on failure ───────────────────────────
       - name: Upload build log (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
