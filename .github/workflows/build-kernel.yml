@@ -39,7 +39,7 @@ jobs:
             flex git kmod libelf-dev libssl-dev libncurses-dev \
             lz4 python3 python3-pip rsync unzip wget zip zstd \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            clang lld llvm
+            clang lld llvm pahole dwarves
 
           echo "Clang version:"
           clang --version
