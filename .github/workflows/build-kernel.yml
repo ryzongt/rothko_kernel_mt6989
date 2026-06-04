@@ -22,10 +22,6 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
 
-      # ── Clang toolchain (AOSP prebuilt, works with MTK GKI 6.1) ───
-      CLANG_VERSION: "clang-r510928"
-      CLANG_URL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
-
       # ── Output names ───────────────────────────────────────────────
       KERNEL_IMAGE: Image
       ZIP_PREFIX: "Rothko-MT6989-GKI"
@@ -54,31 +50,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/clang
-          key: clang-${{ env.CLANG_VERSION }}
+          key: clang-zycromerz-19
 
+      # ── 4. Download Clang toolchain ────────────────────────────────
       - name: Download Clang toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p clang
-          cd clang
-          # Download AOSP Clang via git (shallow clone of just the needed subdir)
-          git clone --depth=1 --filter=blob:none --sparse \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            clang-aosp
-          cd clang-aosp
-          git sparse-checkout set ${{ env.CLANG_VERSION }}
-          mv ${{ env.CLANG_VERSION }}/* ..
-          cd ..
-          rm -rf clang-aosp
+          wget -q \
+            "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240903-release/Clang-19.0.0git-20240903.tar.gz" \
+            -O clang.tar.gz
+          tar -xzf clang.tar.gz -C clang
+          rm clang.tar.gz
 
-      # ── 4. Set up build environment variables ─────────────────────
+      # ── 5. Set up PATH and build vars ─────────────────────────────
       - name: Set up PATH and build vars
         run: |
           CLANG_DIR="${{ github.workspace }}/clang/bin"
           echo "CLANG_DIR=${CLANG_DIR}" >> $GITHUB_ENV
           echo "${CLANG_DIR}" >> $GITHUB_PATH
 
-          # Cross-compile vars
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
@@ -92,7 +83,7 @@ jobs:
           ${CLANG_DIR}/clang --version || true
           aarch64-linux-gnu-gcc --version || true
 
-      # ── 5. Make defconfig ──────────────────────────────────────────
+      # ── 6. Make defconfig ──────────────────────────────────────────
       - name: Generate .config from defconfig
         run: |
           make O=out \
@@ -103,7 +94,7 @@ jobs:
             LLVM=1 LLVM_IAS=1 \
             ${{ env.KERNEL_DEFCONFIG }}
 
-      # ── 6. Build kernel ────────────────────────────────────────────
+      # ── 7. Build kernel ────────────────────────────────────────────
       - name: Build kernel
         run: |
           make O=out \
@@ -115,7 +106,7 @@ jobs:
             -j$(nproc --all) \
             Image 2>&1 | tee build.log
 
-      # ── 7. Check build result ──────────────────────────────────────
+      # ── 8. Check build result ──────────────────────────────────────
       - name: Verify Image exists
         run: |
           if [ ! -f out/arch/arm64/boot/Image ]; then
@@ -127,7 +118,7 @@ jobs:
           echo "✅ Image built successfully"
           ls -lh out/arch/arm64/boot/Image
 
-      # ── 8. Clone AnyKernel3 ────────────────────────────────────────
+      # ── 9. Clone AnyKernel3 ────────────────────────────────────────
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 \
@@ -135,19 +126,17 @@ jobs:
             https://github.com/osm0sis/AnyKernel3.git \
             AnyKernel3
 
-          # Copy Image into AnyKernel3
           cp out/arch/arm64/boot/Image AnyKernel3/Image
 
-      # ── 9. Customize AnyKernel3 anykernel.sh ──────────────────────
+      # ── 10. Customize AnyKernel3 anykernel.sh ─────────────────────
       - name: Patch anykernel.sh for Rothko
         run: |
           cd AnyKernel3
-          # Update device/kernel metadata in anykernel.sh
           sed -i 's/^kernel\.string=.*/kernel.string=Rothko MT6989 GKI 6.1 by ${{ github.actor }}/' anykernel.sh
           sed -i 's/^device\.name1=.*/device.name1=rothko/' anykernel.sh
           sed -i 's/^supported\.versions=.*/supported.versions=/' anykernel.sh
 
-      # ── 10. Package AnyKernel3 zip ─────────────────────────────────
+      # ── 11. Package AnyKernel3 zip ─────────────────────────────────
       - name: Create AnyKernel3 zip
         id: package
         run: |
@@ -167,7 +156,7 @@ jobs:
           echo "✅ Package created: ${ZIP_NAME}"
           ls -lh "../${ZIP_NAME}"
 
-      # ── 11. Upload build artifacts (always available in Actions) ───
+      # ── 12. Upload artifacts ───────────────────────────────────────
       - name: Upload Image artifact
         uses: actions/upload-artifact@v4
         with:
@@ -182,7 +171,7 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 7
 
-      # ── 12. Create GitHub Release ──────────────────────────────────
+      # ── 13. Create GitHub Release ──────────────────────────────────
       - name: Determine release tag
         id: tag
         run: |
@@ -224,7 +213,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 13. Upload build log on failure ───────────────────────────
+      # ── 14. Upload build log on failure ───────────────────────────
       - name: Upload build log (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -232,4 +221,3 @@ jobs:
           name: build-log-failed
           path: build.log
           retention-days: 3
-          
